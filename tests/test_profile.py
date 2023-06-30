@@ -11,4 +11,6 @@ def test_unique_cands():
     )
 
     cands = profile.get_candidates()
-    assert {"A", "B", "C", "E"} == set(cands)
+    unique_cands = {"A", "B", "C", "E"}
+    assert unique_cands == set(cands)
+    assert len(cands) == len(unique_cands)
