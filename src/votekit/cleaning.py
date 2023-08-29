@@ -75,8 +75,6 @@ def merge_ballots(ballots: list[Ballot]) -> Ballot:
     return Ballot(ranking=ranking, voters=voters, weight=Fraction(weight))
 
 
-# TODO: Brenda will replace this function with the function she wrote,
-# TODO: change to keep ranks so that we’ll have None
 def deduplicate_profiles(pp: PreferenceProfile) -> PreferenceProfile:
     """
     Given a preference profile, deduplicates its ballots.
@@ -136,7 +134,6 @@ def remove_from_ballots(ballot: Ballot, non_cands: list[str]) -> Ballot:
     return clean_ballot
 
 
-## TODO: typehints so that non_cands inputs is str or list of strs
 def remove_noncands(
     profile: PreferenceProfile, non_cands: list[str]
 ) -> PreferenceProfile:
