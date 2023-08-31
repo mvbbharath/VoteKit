@@ -29,6 +29,20 @@ COLOR_LIST = [
 CandidateVotes = namedtuple("CandidateVotes", ["cand", "votes"])
 
 
+def make_ballot(ranking: list, weight: int) -> Ballot:
+    """
+    Converts a ranking into a ballot
+
+    Args:
+        ranking (list): a list of candidates
+
+    Returns:
+        Ballot: a ballot with the ranking
+    """
+    rank = [{c} for c in ranking]
+    return Ballot(ranking=rank, weight=Fraction(weight))
+
+
 def compute_votes(candidates: list, ballots: list[Ballot]) -> list[CandidateVotes]:
     """
     Computes first place votes for all candidates in a preference profile
