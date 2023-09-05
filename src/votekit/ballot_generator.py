@@ -366,28 +366,35 @@ class PlackettLuce(BallotGenerator):
         # Call the parent class's __init__ method to handle common parameters
         super().__init__(**data)
 
+    def calculate_ranking_probs(self):
+        """
+        calculates the probability for each possible ranking
+
+        Returns:
+            dict: a mapping of ranking to probability
+        """
+        rankings = list(it.permutations(self.candidates))
+        culture = dict()
+        for ranking in rankings:
+            total_prob = 0
+            for bloc in self.pref_interval_by_bloc.keys():
+                pref_interval = self.pref_interval_by_bloc[bloc].copy()
+                prob = self.bloc_voter_prop[bloc]
+                for s in ranking:
+                    if sum(pref_interval.values()) == 0:
+                        prob *= 1 / np.math.factorial(len(pref_interval))
+                    else:
+                        prob *= pref_interval[s] / sum(pref_interval.values())
+                    del pref_interval[s]
+                total_prob += prob
+            culture[ranking] = total_prob
+        return culture
+
     def generate_profile(self, number_of_ballots) -> PreferenceProfile:
-        ballot_pool = []
-
-        for bloc in self.bloc_voter_prop.keys():
-            # number of voters in this bloc
-            num_ballots = self.round_num(number_of_ballots * self.bloc_voter_prop[bloc])
-            pref_interval_dict = self.pref_interval_by_bloc[bloc]
-            # creates the interval of probabilities for candidates supported by this block
-            cand_support_vec = [pref_interval_dict[cand] for cand in self.candidates]
-
-            for _ in range(num_ballots):
-                # generates ranking based on probability distribution of candidate support
-                ballot = list(
-                    np.random.choice(
-                        self.candidates,
-                        self.ballot_length,
-                        p=cand_support_vec,
-                        replace=False,
-                    )
-                )
-
-                ballot_pool.append(ballot)
+        culture = self.calculate_ranking_probs()
+        ballots = list(culture.keys())
+        weights = list(culture.values())
+        ballot_pool = random.choices(ballots, weights=weights, k=number_of_ballots)
 
         pp = self.ballot_pool_to_profile(
             ballot_pool=ballot_pool, candidates=self.candidates
