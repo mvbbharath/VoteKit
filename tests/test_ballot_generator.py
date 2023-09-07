@@ -16,6 +16,7 @@ from votekit.ballot_generator import (
     OneDimSpatial,
     BallotSimplex,
 )
+from votekit.metrics.distances import lp_dist
 from votekit.pref_profile import PreferenceProfile
 
 # set seed for more consistent tests
@@ -229,6 +230,36 @@ def test_ballot_simplex_from_alpha_zero():
 #     assert do_ballot_probs_match_ballot_dist(ballot_prob_dict, generated_profile)
 
 
+def slow_PL(candidates, bloc_voter_prop, pref_interval_by_bloc, number_of_ballots):
+    ballot_pool = []
+    ballot_length = len(candidates)
+
+    for bloc in bloc_voter_prop.keys():
+        # number of voters in this bloc
+        num_ballots = PlackettLuce.round_num(number_of_ballots * bloc_voter_prop[bloc])
+        pref_interval_dict = pref_interval_by_bloc[bloc]
+        # creates the interval of probabilities for candidates supported by this block
+        cand_support_vec = [pref_interval_dict[cand] for cand in candidates]
+
+        for _ in range(num_ballots):
+            # generates ranking based on probability distribution of candidate support
+            ballot = list(
+                np.random.choice(
+                    candidates,
+                    ballot_length,
+                    p=cand_support_vec,
+                    replace=False,
+                )
+            )
+
+            ballot_pool.append(ballot)
+
+    pp = PlackettLuce.ballot_pool_to_profile(
+        ballot_pool=ballot_pool, candidates=candidates
+    )
+    return pp
+
+
 def test_PL_distribution():
     # Set-up
     number_of_ballots = 100
@@ -240,22 +271,6 @@ def test_PL_distribution():
     }
     bloc_voter_prop = {"W": 0.7, "C": 0.3}
 
-    # Find ballot probs
-    possible_rankings = list(it.permutations(candidates, ballot_length))
-
-    ballot_prob_dict = {b: 0 for b in possible_rankings}
-
-    for ranking in possible_rankings:
-        # ranking = b.ranking
-        for bloc in bloc_voter_prop.keys():
-            support_for_cands = pref_interval_by_bloc[bloc]
-            total_prob = 1
-            prob = bloc_voter_prop[bloc]
-            for cand in ranking:
-                prob *= support_for_cands[cand] / total_prob
-                total_prob -= support_for_cands[cand]
-            ballot_prob_dict[ranking] += prob
-
     # Generate ballots
     generated_profile = PlackettLuce(
         ballot_length=ballot_length,
@@ -264,10 +279,16 @@ def test_PL_distribution():
         bloc_voter_prop=bloc_voter_prop,
     ).generate_profile(number_of_ballots=number_of_ballots)
 
-    # Test
-    assert do_ballot_probs_match_ballot_dist(
-        ballot_prob_dict, generated_profile, len(candidates)
+    mock_profile = slow_PL(
+        candidates=candidates,
+        bloc_voter_prop=bloc_voter_prop,
+        pref_interval_by_bloc=pref_interval_by_bloc,
+        number_of_ballots=number_of_ballots,
     )
+
+    # what's a good threshold for l1 distance?
+    print(lp_dist(generated_profile, mock_profile))
+    assert False
 
 
 def test_BT_distribution():
@@ -344,7 +365,7 @@ def test_BT_probability_calculation():
     w_pref_interval = pref_interval_by_bloc["W"]
     c_pref_interval = pref_interval_by_bloc["C"]
 
-    assert model._calc_prob(
+    assert model.calculate_ranking_probs(
         permutations=[permutation], cand_support_dict=pref_interval_by_bloc["C"]
     )[permutation] == (
         c_pref_interval["W1"] / (c_pref_interval["W1"] + c_pref_interval["W2"])
@@ -357,25 +378,95 @@ def test_BT_probability_calculation():
         * (w_pref_interval["W2"] / (w_pref_interval["W2"] + w_pref_interval["C2"]))
     )
     assert (
-        model._calc_prob(
+        model.calculate_ranking_probs(
             permutations=[permutation], cand_support_dict=pref_interval_by_bloc["W"]
         )[permutation]
         == prob
     )
 
 
+def slow_AC(
+    candidates,
+    bloc_voter_prop,
+    slate_to_candidates,
+    pref_interval_by_bloc,
+    bloc_crossover_rate,
+):
+    ballot_pool = []
+    number_of_ballots = len(candidates)
+
+    for bloc in bloc_voter_prop.keys():
+
+        num_ballots = AlternatingCrossover.round_num(
+            number_of_ballots * bloc_voter_prop[bloc]
+        )
+        crossover_dict = bloc_crossover_rate[bloc]
+        pref_interval_dict = pref_interval_by_bloc[bloc]
+
+        # generates crossover ballots from each bloc (allowing for more than two blocs)
+        for opposing_slate in crossover_dict.keys():
+            crossover_rate = crossover_dict[opposing_slate]
+            num_crossover_ballots = AlternatingCrossover.round_num(
+                crossover_rate * num_ballots
+            )
+
+            opposing_cands = slate_to_candidates[opposing_slate]
+            bloc_cands = slate_to_candidates[bloc]
+
+            for _ in range(num_crossover_ballots):
+                pref_for_opposing = [
+                    pref_interval_dict[cand] for cand in opposing_cands
+                ]
+                # convert to probability distribution
+                pref_for_opposing = [
+                    p / sum(pref_for_opposing) for p in pref_for_opposing
+                ]
+
+                pref_for_bloc = [pref_interval_dict[cand] for cand in bloc_cands]
+                # convert to probability distribution
+                pref_for_bloc = [p / sum(pref_for_bloc) for p in pref_for_bloc]
+
+                bloc_cands = list(
+                    np.random.choice(
+                        bloc_cands,
+                        p=pref_for_bloc,
+                        size=len(bloc_cands),
+                        replace=False,
+                    )
+                )
+                opposing_cands = list(
+                    np.random.choice(
+                        opposing_cands,
+                        size=len(opposing_cands),
+                        p=pref_for_opposing,
+                        replace=False,
+                    )
+                )
+
+                # alternate the bloc and opposing bloc candidates to create crossover ballots
+                if bloc != opposing_slate:  # alternate
+                    ballot = [
+                        item
+                        for pair in zip(opposing_cands, bloc_cands)
+                        for item in pair
+                        if item is not None
+                    ]
+
+                # check that ballot_length is shorter than total number of cands
+                ballot_pool.append(ballot)
+
+            # Bloc ballots
+            for _ in range(num_ballots - num_crossover_ballots):
+                ballot = bloc_cands + opposing_cands
+                ballot_pool.append(ballot)
+
+    pp = AlternatingCrossover.ballot_pool_to_profile(
+        ballot_pool=ballot_pool, candidates=candidates
+    )
+    return pp
+
+
 def test_AC_distribution():
-    def is_alternating(arr):
-        return all(arr[i] != arr[i + 1] for i in range(len(arr) - 1))
-
-    def group_elements_by_mapping(element_list, mapping):
-        grouped_elements = {group: [] for group in mapping.values()}
-
-        for element in element_list:
-            group = mapping[element]
-            if group is not None:
-                grouped_elements[group].append(element)
-        return grouped_elements
 
     # Set-up
     number_of_ballots = 1000
@@ -383,63 +474,13 @@ def test_AC_distribution():
     candidates = ["W1", "W2", "C1", "C2"]
     ballot_length = None
     slate_to_candidate = {"W": ["W1", "W2"], "C": ["C1", "C2"]}
-    # TODO: change this to be cand to slate
-    cand_to_slate = {
-        candidate: slate
-        for slate, candidates in slate_to_candidate.items()
-        for candidate in candidates
-    }
+
     pref_interval_by_bloc = {
         "W": {"W1": 0.4, "W2": 0.3, "C1": 0.2, "C2": 0.1},
         "C": {"W1": 0.2, "W2": 0.2, "C1": 0.3, "C2": 0.3},
     }
     bloc_voter_prop = {"W": 0.7, "C": 0.3}
     bloc_crossover_rate = {"W": {"C": 1}, "C": {"W": 1}}
-
-    # Find ballot probs
-    possible_rankings = list(it.permutations(candidates, ballot_length))
-    ballot_prob_dict = {b: 0 for b in possible_rankings}
-
-    for ranking in possible_rankings:
-
-        slates_for_ranking = [cand_to_slate[cand] for cand in ranking]
-        bloc = cand_to_slate[ranking[0]]
-        starting_prob = 0
-
-        if is_alternating(slates_for_ranking):
-            bloc = cand_to_slate[ranking[1]]
-            opposing_bloc = cand_to_slate[ranking[0]]
-            crossover_rate = bloc_crossover_rate[bloc][opposing_bloc]
-
-            starting_prob = bloc_voter_prop[bloc] * crossover_rate
-            print("alt", starting_prob)
-
-        # is bloc voter
-        if set(slates_for_ranking[: len(slate_to_candidate[bloc])]) == {bloc}:
-            starting_prob = bloc_voter_prop[bloc] * round(
-                (1 - sum(bloc_crossover_rate[bloc].values()))
-            )
-            print("bloc", starting_prob)
-
-        ballot_prob_dict[ranking] = starting_prob
-        slate_to_ranked_cands = group_elements_by_mapping(ranking, cand_to_slate)
-        cand_support = pref_interval_by_bloc[bloc]
-
-        prob = 1
-        for ranked_cands in slate_to_ranked_cands.values():
-            pref_interval = {
-                k: cand_support[k] for k in cand_support if k in ranked_cands
-            }
-            pref_interval = {
-                k: pref_interval[k] / sum(pref_interval.values()) for k in pref_interval
-            }
-
-            total_prob = 1
-            for cand in ranked_cands:
-                prob *= pref_interval[cand] / total_prob
-                total_prob -= pref_interval[cand]
-
-        ballot_prob_dict[ranking] *= prob
 
     # Generate ballots
     generated_profile = AlternatingCrossover(
@@ -451,10 +492,16 @@ def test_AC_distribution():
         bloc_crossover_rate=bloc_crossover_rate,
     ).generate_profile(number_of_ballots)
 
-    # Test
-    assert do_ballot_probs_match_ballot_dist(
-        ballot_prob_dict, generated_profile, len(candidates)
+    mock_profile = slow_AC(
+        candidates=candidates,
+        bloc_crossover_rate=bloc_crossover_rate,
+        slate_to_candidates=slate_to_candidate,
+        pref_interval_by_bloc=pref_interval_by_bloc,
+        bloc_voter_prop=bloc_voter_prop,
     )
+
+    print(lp_dist(generated_profile, mock_profile))
+    assert False
 
 
 def compute_pl_prob(perm, interval):
@@ -604,7 +651,6 @@ def test_interval_from_params():
     for b in blocs:
         pref = ac.pref_interval_by_bloc[b].values()
         if not any(value > 0.4 for value in pref):
-            print(pref)
             assert False
 
     assert True

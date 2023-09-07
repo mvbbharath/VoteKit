@@ -373,21 +373,22 @@ class PlackettLuce(BallotGenerator):
         Returns:
             dict: a mapping of ranking to probability
         """
-        rankings = list(it.permutations(self.candidates))
-        culture = dict()
+        rankings = list(it.permutations(self.candidates, self.ballot_length))
+        culture = {b: 0 for b in rankings}
         for ranking in rankings:
-            total_prob = 0
             for bloc in self.pref_interval_by_bloc.keys():
-                pref_interval = self.pref_interval_by_bloc[bloc].copy()
+                pref_interval = self.pref_interval_by_bloc[bloc]
                 prob = self.bloc_voter_prop[bloc]
-                for s in ranking:
-                    if sum(pref_interval.values()) == 0:
-                        prob *= 1 / np.math.factorial(len(pref_interval))
-                    else:
-                        prob *= pref_interval[s] / sum(pref_interval.values())
-                    del pref_interval[s]
-                total_prob += prob
-            culture[ranking] = total_prob
+                total_prob = 1
+                for cand in ranking:
+                    # if sum(pref_interval.values()) == 0:
+                    #     prob *= 1 / np.math.factorial(len(pref_interval))
+                    # else:
+                    #     prob *= pref_interval[cand] / sum(pref_interval.values())
+                    # del pref_interval[cand]
+                    prob *= pref_interval[cand] / total_prob
+                    total_prob -= pref_interval[cand]
+            culture[ranking] += prob
         return culture
 
     def generate_profile(self, number_of_ballots) -> PreferenceProfile:
@@ -400,6 +401,34 @@ class PlackettLuce(BallotGenerator):
             ballot_pool=ballot_pool, candidates=self.candidates
         )
         return pp
+
+    # def generate_profile(self, number_of_ballots) -> PreferenceProfile:
+    # ballot_pool = []
+
+    # for bloc in self.bloc_voter_prop.keys():
+    #     # number of voters in this bloc
+    #     num_ballots = self.round_num(number_of_ballots * self.bloc_voter_prop[bloc])
+    #     pref_interval_dict = self.pref_interval_by_bloc[bloc]
+    #     # creates the interval of probabilities for candidates supported by this block
+    #     cand_support_vec = [pref_interval_dict[cand] for cand in self.candidates]
+
+    #     for _ in range(num_ballots):
+    #         # generates ranking based on probability distribution of candidate support
+    #         ballot = list(
+    #             np.random.choice(
+    #                 self.candidates,
+    #                 self.ballot_length,
+    #                 p=cand_support_vec,
+    #                 replace=False,
+    #             )
+    #         )
+
+    #         ballot_pool.append(ballot)
+
+    # pp = self.ballot_pool_to_profile(
+    #     ballot_pool=ballot_pool, candidates=self.candidates
+    # )
+    #     return pp
 
 
 class BradleyTerry(BallotGenerator):
@@ -426,7 +455,9 @@ class BradleyTerry(BallotGenerator):
         # Call the parent class's __init__ method to handle common parameters
         super().__init__(**data)
 
-    def _calc_prob(self, permutations: list[tuple], cand_support_dict: dict) -> dict:
+    def calculate_ranking_probs(
+        self, permutations: list[tuple], cand_support_dict: dict
+    ) -> dict:
         """
         given a list of rankings and the preference interval, \
         calculates the probability of observing each ranking
@@ -461,7 +492,7 @@ class BradleyTerry(BallotGenerator):
             num_ballots = self.round_num(number_of_ballots * self.bloc_voter_prop[bloc])
             pref_interval_dict = self.pref_interval_by_bloc[bloc]
 
-            ranking_to_prob = self._calc_prob(
+            ranking_to_prob = self.calculate_ranking_probs(
                 permutations=permutations, cand_support_dict=pref_interval_dict
             )
 
@@ -526,70 +557,76 @@ class AlternatingCrossover(BallotGenerator):
         self.slate_to_candidates = slate_to_candidates
         self.bloc_crossover_rate = bloc_crossover_rate
 
+    def calculate_ranking_probs(self) -> dict:
+
+        cand_to_slate = {
+            candidate: slate
+            for slate, candidates in self.slate_to_candidates.items()
+            for candidate in candidates
+        }
+
+        def is_alternating(arr):
+            return all(arr[i] != arr[i + 1] for i in range(len(arr) - 1))
+
+        def group_elements_by_mapping(element_list, mapping):
+            grouped_elements = {group: [] for group in mapping.values()}
+
+            for element in element_list:
+                group = mapping[element]
+                if group is not None:
+                    grouped_elements[group].append(element)
+            return grouped_elements
+
+        possible_rankings = list(it.permutations(self.candidates, self.ballot_length))
+        ballot_prob_dict = {b: 0 for b in possible_rankings}
+
+        for ranking in possible_rankings:
+
+            slates_for_ranking = [cand_to_slate[cand] for cand in ranking]
+            bloc = cand_to_slate[ranking[0]]
+            starting_prob = 0
+
+            if is_alternating(slates_for_ranking):
+                # only allows two slates to alternate
+                bloc = cand_to_slate[ranking[1]]
+                opposing_bloc = cand_to_slate[ranking[0]]
+                crossover_rate = self.bloc_crossover_rate[bloc][opposing_bloc]
+
+                starting_prob = self.bloc_voter_prop[bloc] * crossover_rate
+
+            # is bloc voter
+            if set(slates_for_ranking[: len(self.slate_to_candidates[bloc])]) == {bloc}:
+                starting_prob = self.bloc_voter_prop[bloc] * round(
+                    (1 - sum(self.bloc_crossover_rate[bloc].values()))
+                )
+
+            ballot_prob_dict[ranking] = starting_prob
+            slate_to_ranked_cands = group_elements_by_mapping(ranking, cand_to_slate)
+            cand_support = self.pref_interval_by_bloc[bloc]
+
+            prob = 1
+            for ranked_cands in slate_to_ranked_cands.values():
+                pref_interval = {
+                    k: cand_support[k] for k in cand_support if k in ranked_cands
+                }
+                pref_interval = {
+                    k: pref_interval[k] / sum(pref_interval.values())
+                    for k in pref_interval
+                }
+
+                total_prob = 1
+                for cand in ranked_cands:
+                    prob *= pref_interval[cand] / total_prob
+                    total_prob -= pref_interval[cand]
+
+            ballot_prob_dict[ranking] *= prob
+        return ballot_prob_dict
+
     def generate_profile(self, number_of_ballots) -> PreferenceProfile:
-
-        ballot_pool = []
-
-        for bloc in self.bloc_voter_prop.keys():
-
-            num_ballots = self.round_num(number_of_ballots * self.bloc_voter_prop[bloc])
-            crossover_dict = self.bloc_crossover_rate[bloc]
-            pref_interval_dict = self.pref_interval_by_bloc[bloc]
-
-            # generates crossover ballots from each bloc (allowing for more than two blocs)
-            for opposing_slate in crossover_dict.keys():
-                crossover_rate = crossover_dict[opposing_slate]
-                num_crossover_ballots = self.round_num(crossover_rate * num_ballots)
-
-                opposing_cands = self.slate_to_candidates[opposing_slate]
-                bloc_cands = self.slate_to_candidates[bloc]
-
-                for _ in range(num_crossover_ballots):
-                    pref_for_opposing = [
-                        pref_interval_dict[cand] for cand in opposing_cands
-                    ]
-                    # convert to probability distribution
-                    pref_for_opposing = [
-                        p / sum(pref_for_opposing) for p in pref_for_opposing
-                    ]
-
-                    pref_for_bloc = [pref_interval_dict[cand] for cand in bloc_cands]
-                    # convert to probability distribution
-                    pref_for_bloc = [p / sum(pref_for_bloc) for p in pref_for_bloc]
-
-                    bloc_cands = list(
-                        np.random.choice(
-                            bloc_cands,
-                            p=pref_for_bloc,
-                            size=len(bloc_cands),
-                            replace=False,
-                        )
-                    )
-                    opposing_cands = list(
-                        np.random.choice(
-                            opposing_cands,
-                            size=len(opposing_cands),
-                            p=pref_for_opposing,
-                            replace=False,
-                        )
-                    )
-
-                    # alternate the bloc and opposing bloc candidates to create crossover ballots
-                    if bloc != opposing_slate:  # alternate
-                        ballot = [
-                            item
-                            for pair in zip(opposing_cands, bloc_cands)
-                            for item in pair
-                            if item is not None
-                        ]
-
-                    # check that ballot_length is shorter than total number of cands
-                    ballot_pool.append(ballot)
-
-                # Bloc ballots
-                for _ in range(num_ballots - num_crossover_ballots):
-                    ballot = bloc_cands + opposing_cands
-                    ballot_pool.append(ballot)
+        culture = self.calculate_ranking_probs()
+        ballots = list(culture.keys())
+        weights = list(culture.values())
+        ballot_pool = random.choices(ballots, weights=weights, k=number_of_ballots)
 
         pp = self.ballot_pool_to_profile(
             ballot_pool=ballot_pool, candidates=self.candidates

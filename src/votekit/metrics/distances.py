@@ -66,11 +66,11 @@ def lp_dist(
     electB = pp_2arry[:, 1]
 
     if isinstance(p_value, int):
-        sum = 0
+        dist_sum = 0
         for i in range(len(electA)):
             diff = (abs(electA[i] - electB[i])) ** p_value
-            sum += diff
-        lp_dist = sum ** (1 / p_value)
+            dist_sum += diff
+        lp_dist = dist_sum ** (1 / p_value)
         return lp_dist
 
     elif p_value == "inf":
