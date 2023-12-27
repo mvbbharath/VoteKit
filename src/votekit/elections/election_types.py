@@ -17,8 +17,9 @@ from ..utils import (
     tie_broken_ranking,
     elect_cands_from_set_ranking,
     first_place_votes,
-    ballots_by_first_cand
+    ballots_by_first_cand,
 )
+
 
 class STV(Election):
     """
@@ -111,11 +112,13 @@ class STV(Election):
 
         # if number of remaining candidates equals number of remaining seats,
         # everyone is elected
-        if len(remaining) == self.seats - len([c for s in self.state.winners() for c in s]):
+        if len(remaining) == self.seats - len(
+            [c for s in self.state.winners() for c in s]
+        ):
             elected = [{cand} for cand, _ in round_votes]
             remaining = []
             ballots = []
-        
+
         # elect all candidates who crossed threshold
         elif round_votes[0].votes >= self.threshold:
             # partition ballots by first place candidate
@@ -132,14 +135,13 @@ class STV(Election):
                         plurality_score,
                         self.threshold,
                     )
-            
+
             # add in remaining ballots where non-winners are first
             for cand in remaining:
                 new_ballots += cand_to_ballot[cand]
 
             # remove winners from all ballots
-            ballots = remove_cand([c for s in elected for c in s],new_ballots)
-            
+            ballots = remove_cand([c for s in elected for c in s], new_ballots)
 
         # since no one has crossed threshold, eliminate one of the people
         # with least first place votes
@@ -161,12 +163,17 @@ class STV(Election):
             remaining.remove(next(iter(lp_cand)))
 
         # sorts remaining based on their current first place votes
-        _, score_dict = compute_votes(remaining, ballots)
-        remaining = scores_into_set_list(score_dict, remaining)
+        # _, remaining_votes = compute_votes(remaining, ballots)
+        remaining = scores_into_set_list(plurality_score, remaining)
 
-        # sort candidates by vote share if multiple are elected    
+        # sort candidates by vote share if multiple are elected
         if len(elected) >= 1:
-            elected = scores_into_set_list(plurality_score, [c for s in elected for c in s])
+            if self.state.curr_round > 0:
+                score_dict = self.state.get_scores(self.state.curr_round)
+            else:
+                score_dict = plurality_score
+
+            elected = scores_into_set_list(score_dict, [c for s in elected for c in s])
 
         # Make sure list-of-sets have non-empty elements
         elected = [s for s in elected if s != set()]
@@ -177,7 +184,7 @@ class STV(Election):
             elected=elected,
             eliminated_cands=eliminated,
             remaining=remaining,
-            scores=score_dict,
+            scores=plurality_score,
             profile=PreferenceProfile(ballots=ballots),
             previous=self.state,
         )
@@ -958,6 +965,7 @@ class Plurality(SNTV):
         self.seats = seats
         self.tiebreak = tiebreak
 
+
 class IRV(STV):
     """
     A class for conducting IRV elections, which are mathematically equivalent to STV for one seat.
@@ -988,7 +996,11 @@ class IRV(STV):
         tiebreak: str = "random",
     ):
         # let parent class handle the construction
-        super().__init__(profile = profile, ballot_ties = ballot_ties,
-                         seats = 1, tiebreak = tiebreak, quota = quota,
-                         transfer=fractional_transfer)
-
+        super().__init__(
+            profile=profile,
+            ballot_ties=ballot_ties,
+            seats=1,
+            tiebreak=tiebreak,
+            quota=quota,
+            transfer=fractional_transfer,
+        )
